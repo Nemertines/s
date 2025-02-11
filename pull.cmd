@@ -1,2 +1,0 @@
-cd s
-git pull
