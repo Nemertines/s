@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Камера — тест</title>
+<style>
+  :root{--bg:#0f1720;--panel:#111827;--accent:#3b82f6;--muted:#9ca3af;--card:#0b1220}
+  html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;color:#e6eef6;background:linear-gradient(180deg,#031024 0%, #051426 100%);}
+  .wrap{max-width:980px;margin:28px auto;padding:20px;background:rgba(8,12,20,0.6);border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.6);}
+  h1{margin:0 0 12px;font-size:20px;color:#fff}
+  p{margin:0 0 14px;color:var(--muted)}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0 18px}
+  select,button{padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:var(--card);color:#fff;font-weight:600}
+  button.primary{background:linear-gradient(90deg,var(--accent),#60a5fa);border:0}
+  .video-row{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap}
+  video{width:640px;height:360px;background:#000;border-radius:10px;object-fit:cover}
+  canvas{display:none}
+  .right{flex:1;min-width:220px}
+  .meta{font-size:13px;color:var(--muted);margin-top:10px}
+  .small{font-size:13px;color:var(--muted)}
+  .snap-preview{margin-top:8px;border-radius:8px;overflow:hidden;background:#071022;padding:6px}
+  .snap-preview img{width:100%;height:auto;display:block;border-radius:6px}
+  .hint{margin-top:10px;color:#ffcc66}
+  @media(max-width:760px){
+    video{width:100%;height:auto}
+    .video-row{flex-direction:column}
+  }
+</style>
+</head>
+<body>
+<div class="wrap" role="main">
+  <h1>Тест доступа к камере</h1>
+  <p>Сайт запросит доступ к камере. Разреши его — и видео покажется. (Требуется HTTPS или localhost.)</p>
+
+  <div class="controls" aria-hidden="false">
+    <select id="deviceSelect" aria-label="Выберите камеру"></select>
+    <button id="btnEnable" class="primary">Включить камеру</button>
+    <button id="btnSwitch">Переключить (front/back)</button>
+    <button id="btnSnap">Сделать фото</button>
+    <a id="downloadLink" style="display:none" download="snapshot.png">Скачать снимок</a>
+  </div>
+
+  <div class="video-row">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="right">
+      <div class="snap-preview" id="previewBox" aria-hidden="true">
+        <img id="previewImg" alt="Снимок превью" />
+      </div>
+      <div class="meta">
+        <div class="small">Статус: <span id="status">не активна</span></div>
+        <div class="small">Разрешения: <span id="perm">не проверено</span></div>
+        <div class="small">Поддержка getUserMedia: <span id="support"></span></div>
+      </div>
+      <div class="hint" id="hint"></div>
+    </div>
+  </div>
+
+  <canvas id="canvas" width="1280" height="720"></canvas>
+</div>
+
+<script>
+(async function(){
+  const video = document.getElementById('video');
+  const deviceSelect = document.getElementById('deviceSelect');
+  const btnEnable = document.getElementById('btnEnable');
+  const btnSwitch = document.getElementById('btnSwitch');
+  const btnSnap = document.getElementById('btnSnap');
+  const canvas = document.getElementById('canvas');
+  const previewImg = document.getElementById('previewImg');
+  const previewBox = document.getElementById('previewBox');
+  const downloadLink = document.getElementById('downloadLink');
+  const statusEl = document.getElementById('status');
+  const permEl = document.getElementById('perm');
+  const supportEl = document.getElementById('support');
+  const hint = document.getElementById('hint');
+
+  let currentStream = null;
+  let currentDeviceId = null;
+  let lastFacing = 'environment'; // environment = back, user = front
+
+  supportEl.textContent = (!!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) ? 'да' : 'нет';
+
+  function setStatus(s){ statusEl.textContent = s; }
+  function setPerm(s){ permEl.textContent = s; }
+
+  function stopStream() {
+    if (!currentStream) return;
+    for (const track of currentStream.getTracks()) track.stop();
+    currentStream = null;
+    setStatus('не активна');
+  }
+
+  async function enumerateCameras() {
+    deviceSelect.innerHTML = '';
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      cams.forEach((d) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || (`Камера ${deviceSelect.length+1}`);
+        deviceSelect.appendChild(opt);
+      });
+      if (cams.length === 0) {
+        deviceSelect.innerHTML = '<option>Камеры не найдены</option>';
+      }
+    } catch (err) {
+      deviceSelect.innerHTML = '<option>Ошибка перечисления</option>';
+      console.warn('enumerateDevices error', err);
+    }
+  }
+
+  async function startStream(deviceId = null, facing = null) {
+    stopStream();
+    setStatus('запрос разрешения...');
+    setPerm('запрос');
+
+    const constraints = {
+      audio: false,
+      video: {}
+    };
+
+    if (deviceId) constraints.video.deviceId = { exact: deviceId };
+    else if (facing) constraints.video.facingMode = { ideal: facing };
+    else constraints.video.width = { ideal: 1280 }, constraints.video.height = { ideal: 720 };
+
+    try {
+      currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = currentStream;
+      setStatus('стрим активен');
+      setPerm('разрешено');
+      // обновим список устройств (метки появятся после разрешения)
+      await enumerateCameras();
+      // выберем текущую камеру в селекторе
+      try {
+        const track = currentStream.getVideoTracks()[0];
+        const settings = track.getSettings ? track.getSettings() : {};
+        if (settings.deviceId) {
+          currentDeviceId = settings.deviceId;
+          deviceSelect.value = currentDeviceId;
+        }
+      } catch(e){}
+    } catch (err) {
+      console.warn('getUserMedia error', err);
+      setStatus('ошибка');
+      setPerm('отклонено/ошибка');
+      hint.textContent = 'Разрешите доступ к камере в браузере или проверьте, что сайт работает по HTTPS.';
+      // если ошибка из-за отказа — можно показать кнопку ещё раз
+    }
+  }
+
+  // Попытка автоматического запроса при загрузке (если браузер позволяет)
+  // Если браузер блокирует, пользователь увидит кнопку.
+  try {
+    // короткая попытка, не блокируем UI
+    await startStream(null, lastFacing);
+  } catch(e) {
+    // игнор
+  }
+
+  // привязки к контролам
+  btnEnable.addEventListener('click', async () => {
+    hint.textContent = '';
+    await startStream(deviceSelect.value || null, lastFacing);
+  });
+
+  btnSwitch.addEventListener('click', async () => {
+    // переключение front/back
+    lastFacing = (lastFacing === 'user') ? 'environment' : 'user';
+    hint.textContent = 'Постарайтесь держать устройство в пределах видимости камеры';
+    await startStream(null, lastFacing);
+  });
+
+  deviceSelect.addEventListener('change', async () => {
+    const id = deviceSelect.value;
+    await startStream(id, null);
+  });
+
+  btnSnap.addEventListener('click', () => {
+    if (!currentStream) return;
+    const track = currentStream.getVideoTracks()[0];
+    const settings = track.getSettings ? track.getSettings() : {};
+    // размер canvas под видео
+    const w = video.videoWidth || 1280;
+    const h = video.videoHeight || 720;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, w, h);
+    const data = canvas.toDataURL('image/png');
+    previewImg.src = data;
+    previewBox.style.display = 'block';
+    downloadLink.href = data;
+    downloadLink.style.display = 'inline-block';
+    downloadLink.textContent = 'Скачать снимок';
+  });
+
+  // по умолчанию обновим устройства (без запроса)
+  await enumerateCameras();
+
+  // корректно останавливаем при разгрузке страницы
+  window.addEventListener('pagehide', stopStream);
+  window.addEventListener('beforeunload', stopStream);
+
+})();
+</script>
+</body>
+</html>
